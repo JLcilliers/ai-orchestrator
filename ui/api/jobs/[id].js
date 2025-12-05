@@ -33,7 +33,7 @@ export default async function handler(req, res) {
     if (req.method === 'PATCH') {
       // Update job status
       const { status } = req.body;
-      const validStatuses = ['planning', 'running', 'waiting_approval', 'completed', 'failed'];
+      const validStatuses = ['planning', 'running', 'waiting_approval', 'completed', 'failed', 'rejected'];
 
       if (!validStatuses.includes(status)) {
         return res.status(400).json({
