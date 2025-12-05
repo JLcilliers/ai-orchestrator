@@ -1,0 +1,519 @@
+{
+  "name": "AI_Orchestrator_Main",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orchestrator/start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-start",
+      "name": "Start Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [260, 300],
+      "webhookId": "orchestrator-start"
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "=You are the PLANNER in an AI automation system.\n\nYour job is to break down the user's goal into 3-10 concrete, actionable steps.\n\nFor each step, specify:\n1. A clear description of what needs to be done\n2. What the Executor (Claude) should specifically do\n3. What evidence or outputs to return (logs, URLs, test results, etc.)\n\nIMPORTANT:\n- Be specific and actionable\n- Consider dependencies between steps\n- Include validation/testing steps where appropriate\n- If the goal involves code, include testing steps\n\nRespond ONLY with valid JSON in this exact format:\n{\n  \"steps\": [\n    {\n      \"description\": \"Step description\",\n      \"executor_instructions\": \"Detailed instructions for Claude to execute\",\n      \"expected_evidence\": \"What outputs/proof to provide\"\n    }\n  ],\n  \"estimated_complexity\": \"low|medium|high\",\n  \"notes\": \"Any important considerations\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Goal: {{ $json.body.goal }}\n\nJob ID: {{ $json.body.jobId }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3
+        }
+      },
+      "id": "planner-openai",
+      "name": "Planner (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.5,
+      "position": [480, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse planner response and prepare steps for storage\nconst plannerResponse = $input.first().json;\nconst webhookData = $('Start Webhook').first().json;\n\nlet parsedPlan;\ntry {\n  // Handle if response is already parsed or is a string\n  const content = plannerResponse.message?.content || plannerResponse.text || plannerResponse;\n  parsedPlan = typeof content === 'string' ? JSON.parse(content) : content;\n} catch (e) {\n  throw new Error('Failed to parse planner response: ' + e.message);\n}\n\nreturn {\n  jobId: webhookData.body.jobId,\n  goal: webhookData.body.goal,\n  steps: parsedPlan.steps.map((step, index) => ({\n    role: 'executor',\n    description: step.description,\n    executor_instructions: step.executor_instructions,\n    expected_evidence: step.expected_evidence,\n    step_index: index\n  })),\n  complexity: parsedPlan.estimated_complexity,\n  notes: parsedPlan.notes\n};"
+      },
+      "id": "parse-plan",
+      "name": "Parse Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:3001/jobs/{{ $json.jobId }}/steps",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ steps: $json.steps }) }}",
+        "options": {}
+      },
+      "id": "store-steps",
+      "name": "Store Steps in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://localhost:3001/jobs/{{ $('Parse Plan').first().json.jobId }}/steps/next",
+        "options": {}
+      },
+      "id": "get-next-step",
+      "name": "Get Next Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "step-found",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-step-exists",
+      "name": "Step Exists?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1360, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-3-5-sonnet-20241022\",\n  \"max_tokens\": 4096,\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"You are the EXECUTOR in an AI automation system.\\n\\nYour job is to perform the requested action and provide evidence of completion.\\n\\nIMPORTANT RULES:\\n1. Be thorough and precise\\n2. If the task requires code changes, describe exactly what you would do\\n3. If the task requires running commands, specify them\\n4. Always provide clear evidence of what was done\\n5. If something cannot be done, explain why clearly\\n\\nRespond ONLY with valid JSON in this exact format:\\n{\\n  \\\"actions_taken\\\": [\\n    \\\"Description of each action performed\\\"\\n  ],\\n  \\\"code_changes\\\": {\\n    \\\"files_modified\\\": [\\\"list of files\\\"],\\n    \\\"summary\\\": \\\"what was changed\\\"\\n  },\\n  \\\"commands_run\\\": [\\n    \\\"command 1\\\",\\n    \\\"command 2\\\"\\n  ],\\n  \\\"evidence\\\": {\\n    \\\"type\\\": \\\"logs|screenshot|url|test_results|other\\\",\\n    \\\"content\\\": \\\"The actual evidence or description\\\"\\n  },\\n  \\\"requires_local_execution\\\": true|false,\\n  \\\"local_execution_instructions\\\": \\\"If requires_local_execution is true, detailed instructions for Claude Code to run locally\\\",\\n  \\\"status\\\": \\\"completed|needs_local_execution|failed\\\",\\n  \\\"notes\\\": \\\"Any additional information\\\"\\n}\\n\\nStep Description: {{ $json.description }}\\n\\nExecutor Instructions: {{ $json.executor_instructions || $json.description }}\\n\\nExpected Evidence: {{ $json.expected_evidence || 'Provide logs or confirmation of completion' }}\\n\\nStep ID: {{ $json.id }}\\nJob ID: {{ $json.job_id }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "id": "executor-anthropic",
+      "name": "Executor (Claude)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 200],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "anthropic-header-auth",
+          "name": "Anthropic API Key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse executor response from Anthropic Messages API\nconst executorResponse = $input.first().json;\nconst stepData = $('Get Next Step').first().json;\n\nlet parsedResult;\ntry {\n  // Anthropic Messages API returns content as array with text blocks\n  const content = executorResponse.content?.[0]?.text || executorResponse.message?.content || executorResponse.text || executorResponse;\n  parsedResult = typeof content === 'string' ? JSON.parse(content) : content;\n} catch (e) {\n  throw new Error('Failed to parse executor response: ' + e.message);\n}\n\nreturn {\n  stepId: stepData.id,\n  jobId: stepData.job_id,\n  stepDescription: stepData.description,\n  executorResult: parsedResult,\n  requiresLocalExecution: parsedResult.requires_local_execution || false\n};"
+      },
+      "id": "parse-executor",
+      "name": "Parse Executor Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-local",
+              "leftValue": "={{ $json.requiresLocalExecution }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-needs-local",
+      "name": "Needs Local Execution?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2020, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:3001/local-tasks",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"jobId\": \"{{ $json.jobId }}\",\n  \"stepId\": \"{{ $json.stepId }}\",\n  \"instructions\": {{ JSON.stringify($json.executorResult.local_execution_instructions) }}\n}",
+        "options": {}
+      },
+      "id": "create-local-task",
+      "name": "Create Local Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2240, 100]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "=You are the REVIEWER in an AI automation system.\n\nYour job is to evaluate whether a step was completed successfully.\n\nEvaluate based on:\n1. Were all required actions taken?\n2. Is the evidence sufficient and valid?\n3. Are there any errors or issues?\n4. Does this meet the original requirements?\n\nRespond ONLY with valid JSON in this exact format:\n{\n  \"status\": \"pass|needs_fix|needs_human_review\",\n  \"issues\": [\n    \"List any issues found\"\n  ],\n  \"fix_instruction\": \"If status is needs_fix, provide specific instructions to fix the issue\",\n  \"confidence\": 0.0-1.0,\n  \"reasoning\": \"Brief explanation of the decision\"\n}",
+              "role": "system"
+            },
+            {
+              "content": "=Original Goal: {{ $('Parse Plan').first().json.goal }}\n\nStep Description: {{ $json.stepDescription }}\n\nExecutor Report:\n{{ JSON.stringify($json.executorResult, null, 2) }}",
+              "role": "user"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2
+        }
+      },
+      "id": "reviewer-openai",
+      "name": "Reviewer (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.5,
+      "position": [2240, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-cred",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse reviewer response and determine next action\nconst reviewerResponse = $input.first().json;\nconst executorData = $('Parse Executor Response').first().json;\n\nlet parsedReview;\ntry {\n  const content = reviewerResponse.message?.content || reviewerResponse.text || reviewerResponse;\n  parsedReview = typeof content === 'string' ? JSON.parse(content) : content;\n} catch (e) {\n  throw new Error('Failed to parse reviewer response: ' + e.message);\n}\n\nreturn {\n  stepId: executorData.stepId,\n  jobId: executorData.jobId,\n  reviewResult: parsedReview,\n  status: parsedReview.status,\n  fixInstruction: parsedReview.fix_instruction\n};"
+      },
+      "id": "parse-reviewer",
+      "name": "Parse Reviewer Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2460, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-pass",
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "pass",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "switch-review-status",
+      "name": "Review Status",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2680, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://localhost:3001/steps/{{ $json.stepId }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"completed\",\n  \"logs\": {{ JSON.stringify(JSON.stringify($json.reviewResult)) }}\n}",
+        "options": {}
+      },
+      "id": "mark-step-complete",
+      "name": "Mark Step Complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2900, 200]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=http://localhost:3001/jobs/{{ $('Parse Plan').first().json.jobId }}/status",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{ \"status\": \"completed\" }",
+        "options": {}
+      },
+      "id": "mark-job-complete",
+      "name": "Mark Job Complete",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1580, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"message\": \"Job completed successfully\", \"jobId\": \"{{ $('Parse Plan').first().json.jobId }}\" }",
+        "options": {}
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1800, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"success\": true, \"message\": \"Job started\", \"jobId\": \"{{ $json.body.jobId }}\" }",
+        "options": {}
+      },
+      "id": "respond-started",
+      "name": "Respond Job Started",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1140, 500]
+    }
+  ],
+  "connections": {
+    "Start Webhook": {
+      "main": [
+        [
+          {
+            "node": "Planner (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planner (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Parse Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Plan": {
+      "main": [
+        [
+          {
+            "node": "Store Steps in Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Steps in Backend": {
+      "main": [
+        [
+          {
+            "node": "Respond Job Started",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Next Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Next Step": {
+      "main": [
+        [
+          {
+            "node": "Step Exists?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Step Exists?": {
+      "main": [
+        [
+          {
+            "node": "Executor (Claude)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Job Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Executor (Claude)": {
+      "main": [
+        [
+          {
+            "node": "Parse Executor Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Executor Response": {
+      "main": [
+        [
+          {
+            "node": "Needs Local Execution?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Local Execution?": {
+      "main": [
+        [
+          {
+            "node": "Create Local Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reviewer (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reviewer (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Parse Reviewer Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Reviewer Response": {
+      "main": [
+        [
+          {
+            "node": "Review Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Status": {
+      "main": [
+        [
+          {
+            "node": "Mark Step Complete",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Mark Step Complete": {
+      "main": [
+        [
+          {
+            "node": "Get Next Step",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Job Complete": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "ai-orchestrator-local"
+  }
+}

@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+ui/node_modules/
+
+# Environment files (keep .env.local as template)
+.env
+!.env.local
+
+# n8n data
+.n8n/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build outputs
+ui/dist/
+ui/.next/
+ui/out/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test coverage
+coverage/
+
+# Screenshots from testing
+screenshots/
+
+# Windows launcher files (local only)
+*.bat
+*.vbs
+*.lnk
+
+# Data folder
+data/
