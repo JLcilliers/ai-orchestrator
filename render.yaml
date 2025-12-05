@@ -1,0 +1,93 @@
+# Render Blueprint
+# Deploy via: https://dashboard.render.com/blueprints
+
+databases:
+  - name: ai-orchestrator-db
+    databaseName: orchestrator
+    user: orchestrator
+    plan: free
+    region: oregon
+
+services:
+  # Backend API Service
+  - type: web
+    name: ai-orchestrator-backend
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install
+    startCommand: node backend/server.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3001
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: connectionString
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: N8N_WEBHOOK_URL
+        sync: false
+
+  # n8n Workflow Engine (Self-hosted)
+  - type: web
+    name: ai-orchestrator-n8n
+    runtime: docker
+    region: oregon
+    plan: starter # n8n requires more resources
+    dockerfilePath: ./infra/Dockerfile.n8n
+    healthCheckPath: /healthz
+    envVars:
+      - key: N8N_HOST
+        fromService:
+          type: web
+          name: ai-orchestrator-n8n
+          property: host
+      - key: N8N_PORT
+        value: 5678
+      - key: N8N_PROTOCOL
+        value: https
+      - key: WEBHOOK_URL
+        fromService:
+          type: web
+          name: ai-orchestrator-n8n
+          property: hostURL
+      - key: DB_TYPE
+        value: postgresdb
+      - key: DB_POSTGRESDB_DATABASE
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: database
+      - key: DB_POSTGRESDB_HOST
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: host
+      - key: DB_POSTGRESDB_PORT
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: port
+      - key: DB_POSTGRESDB_USER
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: user
+      - key: DB_POSTGRESDB_PASSWORD
+        fromDatabase:
+          name: ai-orchestrator-db
+          property: password
+      - key: N8N_ENCRYPTION_KEY
+        generateValue: true
+      - key: N8N_BASIC_AUTH_ACTIVE
+        value: true
+      - key: N8N_BASIC_AUTH_USER
+        sync: false
+      - key: N8N_BASIC_AUTH_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

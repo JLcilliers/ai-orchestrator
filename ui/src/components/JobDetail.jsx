@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { useJob, approveJob, requestChanges } from '../hooks/useApi';
+import { useJob, useJobLogs, approveJob, requestChanges, rejectJob } from '../hooks/useApi';
 
 function StatusBadge({ status }) {
   return <span className={`badge badge-${status}`}>{status.replace('_', ' ')}</span>;
@@ -60,12 +60,72 @@ function StepItem({ step, index }) {
   );
 }
 
+function LogsViewer({ jobId }) {
+  const { data: logs, loading, error } = useJobLogs(jobId);
+  const [expanded, setExpanded] = useState(false);
+
+  if (loading) {
+    return <div style={{ color: 'var(--color-text-muted)' }}>Loading logs...</div>;
+  }
+
+  if (error) {
+    return <div style={{ color: 'var(--color-text-muted)' }}>Unable to load logs</div>;
+  }
+
+  if (!logs || logs.length === 0) {
+    return <div style={{ color: 'var(--color-text-muted)' }}>No logs yet</div>;
+  }
+
+  const displayLogs = expanded ? logs : logs.slice(-10);
+
+  return (
+    <div>
+      {logs.length > 10 && (
+        <button
+          className="btn btn-secondary"
+          style={{ marginBottom: '0.75rem', padding: '0.375rem 0.75rem' }}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? `Show Latest 10` : `Show All ${logs.length} Logs`}
+        </button>
+      )}
+      <div className="logs-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
+        {displayLogs.map((log, index) => (
+          <div
+            key={log.id || index}
+            className={`log-entry log-${log.level}`}
+            style={{
+              padding: '0.5rem',
+              borderBottom: '1px solid var(--color-border)',
+              fontSize: '0.8rem'
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.25rem' }}>
+              <span style={{ fontWeight: 500 }}>
+                [{log.level?.toUpperCase()}] {log.source}
+              </span>
+              <span style={{ color: 'var(--color-text-muted)' }}>
+                {new Date(log.created_at).toLocaleTimeString()}
+              </span>
+            </div>
+            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              {typeof log.content === 'string' ? log.content : JSON.stringify(log.content, null, 2)}
+            </pre>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function JobDetail() {
   const { jobId } = useParams();
   const { data: job, loading, error, refetch } = useJob(jobId);
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState(null);
   const [feedback, setFeedback] = useState('');
+  const [rejectReason, setRejectReason] = useState('');
+  const [showRejectForm, setShowRejectForm] = useState(false);
 
   const handleApprove = async () => {
     setActionLoading(true);
@@ -93,6 +153,27 @@ function JobDetail() {
     try {
       await requestChanges(jobId, feedback);
       setFeedback('');
+      refetch();
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectReason.trim()) {
+      setActionError('Please provide a reason for rejection');
+      return;
+    }
+
+    setActionLoading(true);
+    setActionError(null);
+
+    try {
+      await rejectJob(jobId, rejectReason);
+      setRejectReason('');
+      setShowRejectForm(false);
       refetch();
     } catch (err) {
       setActionError(err.message);
@@ -204,7 +285,47 @@ function JobDetail() {
               >
                 Request Changes
               </button>
+              <button
+                className="btn btn-danger"
+                onClick={() => setShowRejectForm(!showRejectForm)}
+                disabled={actionLoading}
+                style={{ background: 'var(--color-error)' }}
+              >
+                Reject Job
+              </button>
             </div>
+
+            {showRejectForm && (
+              <div style={{ marginTop: '1rem', padding: '1rem', background: 'rgba(239, 68, 68, 0.1)', borderRadius: 'var(--radius-sm)' }}>
+                <div className="form-group" style={{ marginBottom: '0.75rem' }}>
+                  <textarea
+                    className="form-textarea"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="Please provide a reason for rejection..."
+                    rows={2}
+                    disabled={actionLoading}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button
+                    className="btn"
+                    onClick={handleReject}
+                    disabled={actionLoading}
+                    style={{ background: 'var(--color-error)' }}
+                  >
+                    Confirm Rejection
+                  </button>
+                  <button
+                    className="btn btn-secondary"
+                    onClick={() => { setShowRejectForm(false); setRejectReason(''); }}
+                    disabled={actionLoading}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -227,6 +348,13 @@ function JobDetail() {
             ))}
           </div>
         )}
+      </div>
+
+      <div className="section">
+        <h3 className="section-title">Execution Logs</h3>
+        <div className="card">
+          <LogsViewer jobId={jobId} />
+        </div>
       </div>
     </div>
   );

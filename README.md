@@ -103,6 +103,28 @@ Open http://localhost:3000 in your browser.
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## Deployment
+
+### Quick Deploy
+
+- **UI**: Deployed to Vercel at https://ai-orchestrator-zeta.vercel.app
+- **Backend + n8n**: Deploy to Railway or Render
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for full deployment guide.
+
+### Docker (Local Development)
+
+```bash
+# Start all services with Docker
+npm run docker:up
+
+# View logs
+npm run docker:logs
+
+# Stop services
+npm run docker:down
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -111,6 +133,7 @@ Open http://localhost:3000 in your browser.
 |----------|-------------|---------|
 | `OPENAI_API_KEY` | OpenAI API key | Required |
 | `ANTHROPIC_API_KEY` | Anthropic API key | Required |
+| `DATABASE_URL` | PostgreSQL connection string | Optional (uses JSON file if not set) |
 | `N8N_PORT` | n8n port | 5678 |
 | `BACKEND_PORT` | Backend API port | 3001 |
 | `UI_PORT` | UI dev server port | 3000 |
@@ -183,11 +206,14 @@ The workflow is in `config/n8n-workflow-main.json`. To import:
 - `POST /jobs` - Create new job
 - `GET /jobs` - List all jobs
 - `GET /jobs/:id` - Get job with steps
-- `PATCH /jobs/:id/status` - Update job status
+- `PATCH /jobs/:id` - Update job status
 - `POST /jobs/:id/approve` - Approve waiting job
+- `POST /jobs/:id/request-changes` - Request changes with feedback
+- `POST /jobs/:id/reject` - Reject job with reason
 
 ### Steps
 - `POST /jobs/:id/steps` - Create steps for job
+- `GET /jobs/:id/steps` - Get all steps for job
 - `GET /jobs/:id/steps/next` - Get next pending step
 - `PATCH /steps/:id` - Update step status
 
@@ -195,6 +221,9 @@ The workflow is in `config/n8n-workflow-main.json`. To import:
 - `GET /local-tasks` - Get pending local tasks
 - `POST /local-tasks` - Create local task
 - `POST /local-tasks/:id/result` - Submit task result
+
+### Logs (PostgreSQL only)
+- `GET /jobs/:id/logs` - Get logs for job
 
 ## License
 

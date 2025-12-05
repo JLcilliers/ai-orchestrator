@@ -1,0 +1,584 @@
+{
+  "name": "AI Orchestrator - Main Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "orchestrator/start",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-start",
+      "name": "Start Job Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [220, 300],
+      "webhookId": "orchestrator-start"
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "You are the Planner. Given a goal, break it into 3 to 10 ordered steps.\n\nFor each step, output JSON with:\n- name: Short name for the step\n- description: What needs to be done\n- claude_instruction: Detailed instructions for Claude Code or remote Executor\n- success_criteria: How to verify this step is complete\n- requires_local_execution: boolean - true if this step needs local file system access\n\nOutput ONLY valid JSON array. No markdown, no explanation.\n\nExample output:\n[\n  {\n    \"name\": \"Analyze Requirements\",\n    \"description\": \"Review the goal and identify key requirements\",\n    \"claude_instruction\": \"Read the project files and identify what changes are needed\",\n    \"success_criteria\": \"Requirements documented and understood\",\n    \"requires_local_execution\": true\n  }\n]"
+            },
+            {
+              "content": "={{ $json.body.goal }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.3,
+          "maxTokens": 4096
+        }
+      },
+      "id": "planner-openai",
+      "name": "Planner (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.2,
+      "position": [440, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-creds",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the planner output and prepare steps\nconst jobId = $('Start Job Webhook').first().json.body.jobId;\nconst goal = $('Start Job Webhook').first().json.body.goal;\nconst plannerOutput = $('Planner (OpenAI)').first().json.message.content;\n\nlet steps;\ntry {\n  // Try to parse JSON from the response\n  const jsonMatch = plannerOutput.match(/\\[\\s*\\{[\\s\\S]*\\}\\s*\\]/);\n  if (jsonMatch) {\n    steps = JSON.parse(jsonMatch[0]);\n  } else {\n    steps = JSON.parse(plannerOutput);\n  }\n} catch (e) {\n  // Fallback: create a single step\n  steps = [{\n    name: 'Execute Goal',\n    description: goal,\n    claude_instruction: `Complete this goal: ${goal}`,\n    success_criteria: 'Goal achieved',\n    requires_local_execution: true\n  }];\n}\n\nreturn {\n  json: {\n    jobId,\n    goal,\n    steps: steps.map((step, index) => ({\n      ...step,\n      step_index: index,\n      role: step.requires_local_execution ? 'local_executor' : 'executor'\n    }))\n  }\n};"
+      },
+      "id": "parse-plan",
+      "name": "Parse Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [660, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/jobs/{{ $json.jobId }}/steps",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "steps",
+              "value": "={{ $json.steps }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "store-steps",
+      "name": "Store Steps in Backend",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [880, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "has-steps",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-steps",
+      "name": "Has Pending Steps?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1100, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/jobs/{{ $('Start Job Webhook').first().json.body.jobId }}/steps/next",
+        "options": {}
+      },
+      "id": "get-next-step",
+      "name": "Get Next Step",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1320, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-local",
+              "leftValue": "={{ $json.role }}",
+              "rightValue": "local_executor",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "check-local",
+      "name": "Requires Local Execution?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1540, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/local-tasks",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "jobId",
+              "value": "={{ $json.job_id }}"
+            },
+            {
+              "name": "stepId",
+              "value": "={{ $json.id }}"
+            },
+            {
+              "name": "instructions",
+              "value": "={{ $json.claude_instruction || $json.description }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "create-local-task",
+      "name": "Create Local Task",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1760, 100]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/steps/{{ $('Get Next Step').first().json.id }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "waiting_local_execution"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mark-waiting-local",
+      "name": "Mark Step Waiting",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1980, 100]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "claude-3-5-sonnet-20241022",
+        "messages": {
+          "values": [
+            {
+              "content": "You are the remote Executor. You cannot directly edit the local file system, but you can:\n- Propose detailed instructions for Claude Code running on the user's desktop\n- For light tasks, work conceptually and provide diffs, commands, and test plans\n\nAlways output structured JSON with:\n- actions_planned: array of planned actions\n- instructions_for_local_executor: string (if any local work needed)\n- remote_actions_taken: array of actions you performed\n- evidence: object with urls, logs, branch names\n- status: 'completed' | 'needs_local_execution' | 'failed'\n- summary: brief summary of what was done\n\nOutput ONLY valid JSON. No markdown, no explanation."
+            },
+            {
+              "content": "Goal: {{ $('Start Job Webhook').first().json.body.goal }}\n\nCurrent Step:\nName: {{ $json.name }}\nDescription: {{ $json.description }}\nInstructions: {{ $json.claude_instruction }}\nSuccess Criteria: {{ $json.success_criteria }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 4096
+        }
+      },
+      "id": "executor-anthropic",
+      "name": "Executor (Anthropic)",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1.2,
+      "position": [1760, 300],
+      "credentials": {
+        "anthropicApi": {
+          "id": "anthropic-creds",
+          "name": "Anthropic API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse executor output\nconst executorOutput = $('Executor (Anthropic)').first().json.message.content;\nconst stepId = $('Get Next Step').first().json.id;\n\nlet result;\ntry {\n  const jsonMatch = executorOutput.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    result = JSON.parse(jsonMatch[0]);\n  } else {\n    result = JSON.parse(executorOutput);\n  }\n} catch (e) {\n  result = {\n    status: 'completed',\n    summary: executorOutput,\n    actions_planned: [],\n    remote_actions_taken: [],\n    evidence: {}\n  };\n}\n\nreturn {\n  json: {\n    stepId,\n    executorResult: result\n  }\n};"
+      },
+      "id": "parse-executor",
+      "name": "Parse Executor Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1980, 300]
+    },
+    {
+      "parameters": {
+        "resource": "chat",
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "content": "You are the Reviewer. Given the goal, step definition, and executor results, decide:\n- If the step passes\n- If further automatic fixes are needed\n- If human approval is required\n\nOutput JSON with:\n- status: 'pass' | 'needs_fix' | 'needs_human_review'\n- issues: array of strings (problems found)\n- fix_instruction: string (if status = needs_fix)\n- summary: brief review summary\n\nOutput ONLY valid JSON. No markdown, no explanation."
+            },
+            {
+              "content": "Goal: {{ $('Start Job Webhook').first().json.body.goal }}\n\nStep: {{ $('Get Next Step').first().json.name }}\nSuccess Criteria: {{ $('Get Next Step').first().json.success_criteria }}\n\nExecutor Result:\n{{ JSON.stringify($json.executorResult, null, 2) }}"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2,
+          "maxTokens": 2048
+        }
+      },
+      "id": "reviewer-openai",
+      "name": "Reviewer (OpenAI)",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1.2,
+      "position": [2200, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "openai-creds",
+          "name": "OpenAI API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse reviewer output\nconst reviewerOutput = $('Reviewer (OpenAI)').first().json.message.content;\nconst stepId = $json.stepId;\nconst executorResult = $json.executorResult;\n\nlet review;\ntry {\n  const jsonMatch = reviewerOutput.match(/\\{[\\s\\S]*\\}/);\n  if (jsonMatch) {\n    review = JSON.parse(jsonMatch[0]);\n  } else {\n    review = JSON.parse(reviewerOutput);\n  }\n} catch (e) {\n  review = {\n    status: 'pass',\n    issues: [],\n    summary: 'Review completed'\n  };\n}\n\nreturn {\n  json: {\n    stepId,\n    executorResult,\n    review\n  }\n};"
+      },
+      "id": "parse-review",
+      "name": "Parse Review",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2420, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "review-pass",
+              "leftValue": "={{ $json.review.status }}",
+              "rightValue": "pass",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "review-switch",
+      "name": "Review Decision",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2640, 300]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/steps/{{ $json.stepId }}",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "completed"
+            },
+            {
+              "name": "logs",
+              "value": "={{ JSON.stringify($json.executorResult) }}"
+            },
+            {
+              "name": "evidence",
+              "value": "={{ JSON.stringify($json.review) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mark-completed",
+      "name": "Mark Step Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2860, 200]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/jobs/{{ $('Start Job Webhook').first().json.body.jobId }}/status",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "completed"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mark-job-complete",
+      "name": "Mark Job Completed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1320, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, jobId: $('Start Job Webhook').first().json.body.jobId, message: 'Job completed' } }}"
+      },
+      "id": "respond-success",
+      "name": "Respond Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [2200, 100]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.BACKEND_URL || 'http://host.docker.internal:3001' }}/jobs/{{ $('Start Job Webhook').first().json.body.jobId }}/status",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "status",
+              "value": "waiting_approval"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "mark-waiting-approval",
+      "name": "Mark Waiting Approval",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [2860, 400]
+    }
+  ],
+  "connections": {
+    "Start Job Webhook": {
+      "main": [
+        [
+          {
+            "node": "Planner (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Planner (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Parse Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Plan": {
+      "main": [
+        [
+          {
+            "node": "Store Steps in Backend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Steps in Backend": {
+      "main": [
+        [
+          {
+            "node": "Has Pending Steps?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Pending Steps?": {
+      "main": [
+        [
+          {
+            "node": "Get Next Step",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Job Completed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Next Step": {
+      "main": [
+        [
+          {
+            "node": "Requires Local Execution?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Requires Local Execution?": {
+      "main": [
+        [
+          {
+            "node": "Create Local Task",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Executor (Anthropic)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Local Task": {
+      "main": [
+        [
+          {
+            "node": "Mark Step Waiting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Step Waiting": {
+      "main": [
+        [
+          {
+            "node": "Respond Success",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Executor (Anthropic)": {
+      "main": [
+        [
+          {
+            "node": "Parse Executor Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Executor Result": {
+      "main": [
+        [
+          {
+            "node": "Reviewer (OpenAI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reviewer (OpenAI)": {
+      "main": [
+        [
+          {
+            "node": "Parse Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Review": {
+      "main": [
+        [
+          {
+            "node": "Review Decision",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Decision": {
+      "main": [
+        [
+          {
+            "node": "Mark Step Completed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Waiting Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "ai-orchestrator"
+    }
+  ],
+  "triggerCount": 1,
+  "active": false,
+  "pinData": {},
+  "versionId": "1"
+}

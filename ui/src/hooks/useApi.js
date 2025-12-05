@@ -124,3 +124,31 @@ export async function requestChanges(jobId, feedback) {
 
   return response.json();
 }
+
+/**
+ * Reject a job
+ */
+export async function rejectJob(jobId, reason) {
+  const response = await fetch(`${API_BASE}/jobs/${jobId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to reject job');
+  }
+
+  return response.json();
+}
+
+/**
+ * Hook for job logs
+ */
+export function useJobLogs(jobId) {
+  return useApi(`/jobs/${jobId}/logs`, {
+    pollInterval: 5000,
+    enabled: Boolean(jobId)
+  });
+}

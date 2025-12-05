@@ -175,6 +175,141 @@ async function runTests() {
     failed++;
   }
 
+  // Test 8: Create local task
+  console.log('Test 8: Create Local Task');
+  let taskId;
+  if (jobId) {
+    try {
+      const stepsRes = await fetch(`${BACKEND_URL}/jobs/${jobId}/steps`);
+      const steps = await stepsRes.json();
+      const stepId = steps[0]?.id;
+
+      if (!stepId) throw new Error('No steps found');
+
+      const taskRes = await fetch(`${BACKEND_URL}/local-tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId,
+          stepId,
+          instructions: 'Test local task instructions'
+        })
+      });
+
+      const task = await taskRes.json();
+      taskId = task.id;
+
+      if (task.id && task.status === 'pending') {
+        console.log(`  ✓ Local task created: ${task.id}\n`);
+        passed++;
+      } else {
+        throw new Error('Task not created properly');
+      }
+    } catch (error) {
+      console.log(`  ✗ Failed: ${error.message}\n`);
+      failed++;
+    }
+  } else {
+    console.log('  ⊘ Skipped (no job ID)\n');
+  }
+
+  // Test 9: Complete local task
+  console.log('Test 9: Complete Local Task');
+  if (taskId) {
+    try {
+      const resultRes = await fetch(`${BACKEND_URL}/local-tasks/${taskId}/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          success: true,
+          result: { message: 'Task completed successfully' },
+          logs: 'Test execution logs'
+        })
+      });
+
+      const result = await resultRes.json();
+
+      if (result.status === 'completed') {
+        console.log(`  ✓ Local task completed\n`);
+        passed++;
+      } else {
+        throw new Error(`Unexpected status: ${result.status}`);
+      }
+    } catch (error) {
+      console.log(`  ✗ Failed: ${error.message}\n`);
+      failed++;
+    }
+  } else {
+    console.log('  ⊘ Skipped (no task ID)\n');
+  }
+
+  // Test 10: Approve job workflow
+  console.log('Test 10: Job Approval Workflow');
+  if (jobId) {
+    try {
+      // Set to waiting_approval
+      await fetch(`${BACKEND_URL}/jobs/${jobId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'waiting_approval' })
+      });
+
+      // Approve
+      const approveRes = await fetch(`${BACKEND_URL}/jobs/${jobId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      });
+
+      const approved = await approveRes.json();
+
+      if (approved.status === 'running') {
+        console.log(`  ✓ Job approved and running\n`);
+        passed++;
+      } else {
+        throw new Error(`Unexpected status: ${approved.status}`);
+      }
+    } catch (error) {
+      console.log(`  ✗ Failed: ${error.message}\n`);
+      failed++;
+    }
+  } else {
+    console.log('  ⊘ Skipped (no job ID)\n');
+  }
+
+  // Test 11: Reject job workflow
+  console.log('Test 11: Job Rejection Workflow');
+  if (jobId) {
+    try {
+      // Set to waiting_approval
+      await fetch(`${BACKEND_URL}/jobs/${jobId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'waiting_approval' })
+      });
+
+      // Reject
+      const rejectRes = await fetch(`${BACKEND_URL}/jobs/${jobId}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: 'Test rejection' })
+      });
+
+      const rejected = await rejectRes.json();
+
+      if (rejected.status === 'rejected') {
+        console.log(`  ✓ Job rejected successfully\n`);
+        passed++;
+      } else {
+        throw new Error(`Unexpected status: ${rejected.status}`);
+      }
+    } catch (error) {
+      console.log(`  ✗ Failed: ${error.message}\n`);
+      failed++;
+    }
+  } else {
+    console.log('  ⊘ Skipped (no job ID)\n');
+  }
+
   // Summary
   console.log('═══════════════════════════════════════════════════════');
   console.log(`Results: ${passed} passed, ${failed} failed`);
